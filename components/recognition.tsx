@@ -1,94 +1,157 @@
-'use client';
-import { detectFaces, loadModels } from '@/lib/face-api';
+"use client"
+import { useEffect, useRef, useState } from 'react';
 import * as faceapi from 'face-api.js';
-import { useEffect, useRef } from 'react';
-// const prisma = new PrismaClient();
+import axios from 'axios';
 
-// type FaceDetectionResult = {
-//   descriptor: Float32Array;
-//   user?: User;
-// };
 
-export default function FaceRecognition() {
+interface FaceResult {
+  name: string;
+  confidence: number;
+}
+
+const FaceRecognizer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-//   const [registeredUsers, setRegisteredUsers] = useState<User[]>([]);
+  const [faceMatcher, setFaceMatcher] = useState<faceapi.FaceMatcher | null>(null);
+  const [results, setResults] = useState<FaceResult[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-useEffect(() => {
-  let videoElement: HTMLVideoElement | null = null;
-  let mediaStream: MediaStream | null = null;
+  // Load models and descriptors
+  useEffect(() => {
+    const initialize = async () => {
+      try {
+        // Load face-api.js models
+        await Promise.all([
+          faceapi.nets.ssdMobilenetv1.loadFromUri('/models'),
+          faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
+          faceapi.nets.faceRecognitionNet.loadFromUri('/models'),
+        ]);
 
-  const startVideo = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      mediaStream = stream;
-      videoElement = videoRef.current;
-      
-      if (videoElement) {
-        videoElement.srcObject = stream;
-      }
-    } catch (error) {
-      console.error('Error accessing media devices:', error);
-    }
-  };
+        // Load descriptors from PostgreSQL
+        const faces = await axios.get("/api/register").then((data)=>{return data.data})
+        const labeledDescriptors: faceapi.LabeledFaceDescriptors[] = faces.map((face: { id: string; descriptor: number[] }) =>
+          new faceapi.LabeledFaceDescriptors(
+            `user_${face.id}`, // Or use a name field if you have one
+            [new Float32Array(face.descriptor)]
+          )
+        );
 
-  startVideo();
-  loadModels().catch(console.error);
-
-  return () => {
-    // Cleanup media stream using the captured variables
-    if (mediaStream) {
-      mediaStream.getTracks().forEach(track => track.stop());
-    }
-    
-    // Clear video element reference
-    if (videoElement) {
-      videoElement.srcObject = null;
-    }
-  };
-}, []); // Empty dependency array means this runs once on mount/unmount
-
-
-const handleFaceDetection = async () => {
-    if (!videoRef.current) return;
-    
-    try {
-      const detections = await detectFaces(videoRef.current);
-      const canvas = canvasRef.current;
-      
-      if (canvas) {
-        const displaySize = {
-          width: videoRef.current.offsetWidth,
-          height: videoRef.current.offsetHeight
-        };
-        faceapi.matchDimensions(canvas, displaySize);
+        setFaceMatcher(new faceapi.FaceMatcher(labeledDescriptors));
+        setLoading(false);
+      } catch (err) {
+        console.log(err);
         
-        const resizedDetections = faceapi.resizeResults(detections, displaySize);
-        faceapi.draw.drawDetections(canvas, resizedDetections);
+        setError('Failed to initialize recognition system');
+        setLoading(false);
       }
+    };
+
+    initialize();
+  }, []);
+
+  // Start camera and recognition loop
+  useEffect(() => {
+    if (!faceMatcher) return;
+
+    let stream: MediaStream;
+    let intervalId: NodeJS.Timeout;
+
+    const startRecognition = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+        if (!videoRef.current) return;
+
+        videoRef.current.srcObject = stream;
+        
+        intervalId = setInterval(async () => {
+          if (!videoRef.current || !canvasRef.current) return;
+
+          // Detect faces
+          const detections = await faceapi
+            .detectAllFaces(videoRef.current)
+            .withFaceLandmarks()
+            .withFaceDescriptors();
+
+          // Match faces
+          const results = detections.map(face => {
+            const bestMatch = faceMatcher.findBestMatch(face.descriptor);
+            return {
+              name: bestMatch.label,
+              confidence: Math.round((1 - bestMatch.distance) * 100)
+            };
+          });
+
+          setResults(results);
+          updateCanvas(detections, results);
+        }, 100);
+      } catch (err) {
+        console.log(err);
+        
+        setError('Camera access denied');
+      }
+    };
+
+    startRecognition();
+
+    return () => {
+      clearInterval(intervalId);
+      stream?.getTracks().forEach(track => track.stop());
+    };
+  }, [faceMatcher]);
+
+  const updateCanvas = (
+    detections: faceapi.WithFaceDescriptor<faceapi.WithFaceLandmarks<{ detection: faceapi.FaceDetection; }, faceapi.FaceLandmarks68>>[],
+    results: FaceResult[]
+  ) => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    const displaySize = { width: video.offsetWidth, height: video.offsetHeight };
+
+    faceapi.matchDimensions(canvas, displaySize);
+    const resizedDetections = faceapi.resizeResults(detections, displaySize);
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    resizedDetections.forEach((detection, i) => {
+      const box = detection.detection.box;
+      const text = `${results[i].name} (${results[i].confidence}%)`;
       
-      // Add recognition logic here
-      console.log(detections);
-    } catch (error) {
-      console.error('Detection error:', error);
-    }
+      new faceapi.draw.DrawBox(box, { 
+        label: text,
+        boxColor: '#00ff00',
+        lineWidth: 2
+      }).draw(canvas);
+    });
   };
+
+  if (loading) return <div>Loading recognition system...</div>;
+  if (error) return <div>Error: {error}</div>;
 
   return (
-    <div className="container mx-auto p-4">
-      <video ref={videoRef} autoPlay className="w-full max-w-2xl" />
-      <canvas 
-        ref={canvasRef} 
-        className="absolute top-0 left-0"
-        width="1280" 
-        height="720"
-      />
-      <button 
-        className="bg-blue-500 text-white p-2 rounded mt-4"
-        onClick={handleFaceDetection}
-      >
-        Start Recognition
-      </button>
+    <div className="recognizer">
+      <div style={{ position: 'relative' }}>
+        <video ref={videoRef} autoPlay muted playsInline />
+        <canvas ref={canvasRef} style={{ position: 'absolute', top: 0, left: 0 }} />
+      </div>
+      
+      <div className="results">
+        <h3>Recognized Faces:</h3>
+        <ul>
+          {results.map((result, i) => (
+            <li key={i}>
+              {result.name} - {result.confidence}% confidence
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
-}
+};
+
+export default FaceRecognizer;

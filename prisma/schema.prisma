@@ -3,22 +3,11 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-}
-
-model User {
-  id        Int      @id @default(autoincrement())
-  name      String
-  faces     Face[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Face {
-  id          Int      @id @default(autoincrement())
-  descriptor  Float[]  // Array of facial recognition descriptor values
-  user        User     @relation(fields: [userId], references: [id])
-  userId      Int
-  createdAt   DateTime @default(now())
-}
+  id         Int     @id @default(autoincrement())
+  descriptor Float[]
+} 

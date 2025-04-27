@@ -1,9 +1,14 @@
-import FaceRecognition from "@/components/recognition";
+import FaceRegister from '@/components/registerForm';
 
-export default function Home() {
+
+const FaceRecognitionSystem = () => {
+
   return (
-      <main className="flex ">
-        <FaceRecognition/>
-      </main>
+    <div>
+      <FaceRegister />
+      {/* <button onClick={handleRecognize}>Start Recognition</button> */}
+    </div>
   );
-}
+};
+
+export default FaceRecognitionSystem;

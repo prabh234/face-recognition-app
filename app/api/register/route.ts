@@ -1,36 +1,36 @@
-import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import { MyPrisma } from '@/prisma/prisma';
+import { NextRequest, NextResponse } from 'next/server';
 
-const prisma = new PrismaClient();
-
-interface RegisterRequest {
-  name: string;
-  descriptor: number[];
+// interface RegisterRequest {
+//   descriptor: Float32Array[];
+// }
+export const GET = async () => {
+  const data = await MyPrisma.face.findMany();
+  return NextResponse.json(data)
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  const data = await req.json();
+  // const arr = new Float32Array(data)
+  // console.log(arr);
+  console.log(data);
+  
   try {
-    const { name, descriptor } = await req.json() as RegisterRequest;
-    
-    if (!name || !descriptor) {
+
+    if (!data) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
       );
     }
 
-    const user = await prisma.user.create({
+    const face = await MyPrisma.face.create({
       data: {
-        name,
-        faces: {
-          create: {
-            descriptor: descriptor
-          }
-        }
+        descriptor:data
       }
     });
-    
-    return NextResponse.json(user);
+
+    return NextResponse.json({face},{status:200});
   } catch (error) {
     console.error('Registration error:', error);
     return NextResponse.json(
