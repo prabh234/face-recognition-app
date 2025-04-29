@@ -1,5 +1,5 @@
 "use client"
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState,useCallback } from 'react';
 import * as faceapi from 'face-api.js';
 import axios from 'axios';
 import { BrowserQRCodeReader, IScannerControls } from '@zxing/browser';
@@ -8,26 +8,22 @@ interface FaceResult {
   name: string;
   confidence: number;
 }
-interface Face {
-  id:string,
-  descriptor:number[]
-}
-const FaceAndQrRecognizer = ({ eventid }: { eventid: string }) => {
+
+const FaceAndQrRecognizer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [mode, setMode] = useState<'face' | 'qr'>('face');
+  const [mode, setMode] = useState<'face' | 'qr'>('qr');
   const [faceResult, setFaceResult] = useState<FaceResult | null>(null);
   const [qrContent, setQrContent] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [message, setMessage] = useState('Initializing system...');
   const [faceMatcher, setFaceMatcher] = useState<faceapi.FaceMatcher | null>(null);
-  const scannerControls = useRef<IScannerControls | null>(null);
   const detectionInterval = useRef<NodeJS.Timeout | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const scannerControls = useRef<IScannerControls | null>(null);
 
-  // Load models and initialize face matcher
+  // Load models and face data
   useEffect(() => {
-    const initialize = async () => {
+    const initializeModels = async () => {
       try {
         await Promise.all([
           faceapi.nets.ssdMobilenetv1.loadFromUri('/models'),
@@ -36,29 +32,33 @@ const FaceAndQrRecognizer = ({ eventid }: { eventid: string }) => {
         ]);
 
         const { data } = await axios.get("/api/register");
-        const labeledDescriptors = data.map((face: Face) =>
+        interface FaceData {
+          id: string;
+          descriptor: number[];
+        }
+
+        const labeledDescriptors = data.map((face:FaceData) =>
           new faceapi.LabeledFaceDescriptors(
-            `user_${face.id}`,
+            face.id.toString(),
             [new Float32Array(face.descriptor)]
           )
         );
         setFaceMatcher(new faceapi.FaceMatcher(labeledDescriptors));
-        setLoading(false);
+        setStatus('ready');
       } catch (err) {
         console.error(err);
-        setError('Failed to initialize system');
-        setLoading(false);
+        setStatus('error');
+        setMessage('Failed to initialize system');
       }
     };
-    initialize();
-  }, [eventid]);
 
-  // Face detection and canvas update
-  const updateFaceCanvas = useCallback((
+    initializeModels();
+  }, []);
+
+  const updateFaceCanvas = (
     detection: faceapi.WithFaceDescriptor<faceapi.WithFaceLandmarks<{
       detection: faceapi.FaceDetection;
-    }, faceapi.FaceLandmarks68>> | null,
-    result?: FaceResult
+    }, faceapi.FaceLandmarks68>> | null
   ) => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
@@ -68,19 +68,19 @@ const FaceAndQrRecognizer = ({ eventid }: { eventid: string }) => {
     if (!ctx) return;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
+    
     if (detection) {
       const displaySize = { width: video.offsetWidth, height: video.offsetHeight };
       faceapi.matchDimensions(canvas, displaySize);
       const resizedDetection = faceapi.resizeResults(detection, displaySize);
       
-      new faceapi.draw.DrawBox(resizedDetection.detection.box, {
-        label: result ? `${result.name} (${result.confidence}%)` : 'Recognizing...',
+      new faceapi.draw.DrawBox(resizedDetection.detection.box, { 
+        label: faceResult ? `${faceResult.name} (${faceResult.confidence}%)` : 'Recognizing...',
         boxColor: '#00ff00',
         lineWidth: 2
       }).draw(canvas);
     }
-  }, []);
+  };
 
   const detectFace = useCallback(async () => {
     if (!videoRef.current || !faceMatcher) return;
@@ -90,66 +90,80 @@ const FaceAndQrRecognizer = ({ eventid }: { eventid: string }) => {
       .withFaceLandmarks()
       .withFaceDescriptor();
 
+    updateFaceCanvas(detection || null);
+
     if (detection) {
       const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
-      const result = {
+      setFaceResult({
         name: bestMatch.label,
         confidence: Math.round((1 - bestMatch.distance) * 100)
-      };
-      updateFaceCanvas(detection, result);
-      setFaceResult(result);
+      });
     } else {
-      updateFaceCanvas(null);
       setFaceResult(null);
     }
-  }, [faceMatcher, updateFaceCanvas]);
+  },[faceMatcher,updateFaceCanvas] )
 
-  // Handle mode changes and camera stream
+  // Handle camera stream
   useEffect(() => {
+    let stream: MediaStream | null = null;
+
     const initializeCamera = async () => {
       try {
-        const facingMode = mode === 'face' ? 'user' : 'environment';
-        const newStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode }
-        });
-
-        streamRef.current = newStream;
         if (videoRef.current) {
-          videoRef.current.srcObject = newStream;
-        }
+          const facingMode = mode === 'face' ? 'user' : 'environment';
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode }
+          });
 
-        if (mode === 'face') {
-          detectionInterval.current = setInterval(detectFace, 300);
-        } else {
-          const codeReader = new BrowserQRCodeReader();
-          if (videoRef.current) {
-            codeReader.decodeFromVideoElement(videoRef.current, (result) => {
-              if (result) setQrContent(result.getText());
-            }).then(controls => {
-              scannerControls.current = controls;
-            });
+          videoRef.current.srcObject = stream;
+          await new Promise(resolve => {
+            videoRef.current!.onloadedmetadata = resolve;
+          });
+
+          if (mode === 'face') {
+            detectionInterval.current = setInterval(detectFace, 300);
+          } else {
+            initializeQrScanner();
           }
         }
       } catch (err) {
-        console.error(err);
-        setError('Camera access denied');
+        console.log(err);
+        setStatus('error');
+        setMessage('Camera access denied');
       }
     };
 
     const cleanup = () => {
-      if (detectionInterval.current) clearInterval(detectionInterval.current);
+      if(detectionInterval.current) clearInterval(detectionInterval.current);
       scannerControls.current?.stop();
-      streamRef.current?.getTracks().forEach(track => track.stop());
+      (videoRef.current?.srcObject as MediaStream)?.getTracks().forEach(track => track.stop());
     };
 
     cleanup();
-    if (!loading && !error) initializeCamera();
+    if (status === 'ready') initializeCamera();
 
     return () => cleanup();
-  }, [mode, loading, error, detectFace]);
+  }, [mode, status,detectFace]);
 
-  if (loading) return <div>Loading recognition system...</div>;
-  if (error) return <div>Error: {error}</div>;
+
+
+  const initializeQrScanner = () => {
+    if (!videoRef.current) return;
+
+    const codeReader = new BrowserQRCodeReader();
+    codeReader.decodeFromVideoElement(
+      videoRef.current,
+      (result, error) => {
+        if (result) setQrContent(result.getText());
+        else console.error(error)
+      }
+    ).then(controls => {
+      scannerControls.current = controls;
+    }).catch(console.error);
+  };
+
+  if (status === 'loading') return <div>{message}</div>;
+  if (status === 'error') return <div>Error: {message}</div>;
 
   return (
     <div className="recognizer-container">
@@ -169,15 +183,15 @@ const FaceAndQrRecognizer = ({ eventid }: { eventid: string }) => {
       </div>
 
       <div className="video-wrapper">
-        <video
-          ref={videoRef}
-          autoPlay
-          muted
-          playsInline
+        <video 
+          ref={videoRef} 
+          autoPlay 
+          muted 
+          playsInline 
           style={{ transform: mode === 'face' ? 'scaleX(-1)' : 'none' }}
         />
         {mode === 'face' && (
-          <canvas
+          <canvas 
             ref={canvasRef}
             className="overlay-canvas"
             style={{ transform: 'scaleX(-1)' }}

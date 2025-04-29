@@ -6,14 +6,15 @@ import { NextRequest, NextResponse } from 'next/server';
 // }
 export const GET = async () => {
   const data = await MyPrisma.face.findMany();
-  return NextResponse.json(data)
+  console.log(data);
+  
+  return NextResponse.json(data,{status:200})
 }
 
 export async function POST(req: NextRequest) {
   const data = await req.json();
-  // const arr = new Float32Array(data)
   // console.log(arr);
-  console.log(data);
+  console.log(data.descriptor);
   
   try {
 
@@ -26,7 +27,7 @@ export async function POST(req: NextRequest) {
 
     const face = await MyPrisma.face.create({
       data: {
-        descriptor:data
+        descriptor:data.descriptor
       }
     });
 
